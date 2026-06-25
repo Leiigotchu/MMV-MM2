@@ -1,0 +1,404 @@
+local shared = odh_shared_plugins
+local section = shared.AddSection("Auto Revert/Flux")
+
+local internal_shared = odh_internal_shared
+local gpl_preset = internal_shared.MM2_GPL
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local Terrain = game:GetService("Workspace"):FindFirstChildOfClass("Terrain")
+
+local LocalPlayer = Players.LocalPlayer
+
+local enabled        = false
+local monitorEnabled = false
+local fpsBoost       = false
+local locked         = false
+local upgrade        = false
+
+local gunMode        = false
+local antiMini       = false
+local antiJumper     = false
+local antiZigzag     = false
+local spikeMode      = false
+local superSpike     = false
+
+local perfTier       = "High"
+
+local currentProfile = ""
+local updateConnection
+
+local origShadows = Lighting.GlobalShadows
+local origAmbient = Lighting.OutdoorAmbient
+
+local pingHistory = {}
+local HISTORY_SIZE = 8
+
+local function RecordPing(p)
+    table.insert(pingHistory, p)
+    if #pingHistory > HISTORY_SIZE then
+        table.remove(pingHistory, 1)
+    end
+end
+
+local function GetMaxPing()
+    local m = 0
+    for _, v in ipairs(pingHistory) do
+        if v > m then m = v end
+    end
+    return m
+end
+
+local function GetPing()
+    local ping = LocalPlayer:GetNetworkPing()
+    return math.floor((ping > 0 and ping or 0.06) * 1000)
+end
+
+local configs = {
+    Knife = {
+        Universal = {
+            {X=-14, Y=24,  Z=-3,  H=230, V=235, Sim=90, Int=130, Name="KU-A"},
+            {X=-15, Y=25,  Z=-3,  H=250, V=255, Sim=90, Int=125, Name="KU-B"},
+            {X=-16, Y=26,  Z=-4,  H=270, V=275, Sim=90, Int=120, Name="KU-C"},
+            {X=-17, Y=27,  Z=-4,  H=290, V=295, Sim=90, Int=115, Name="KU-D"},
+            {X=-18, Y=28,  Z=-5,  H=310, V=315, Sim=90, Int=110, Name="KU-E"},
+            {X=-20, Y=30,  Z=-6,  H=330, V=335, Sim=90, Int=105, Name="KU-F"},
+            {X=-22, Y=32,  Z=-7,  H=350, V=355, Sim=90, Int=100, Name="KU-G"},
+            {X=-25, Y=35,  Z=-8,  H=340, V=345, Sim=90, Int=95,  Name="KU-H"},
+        },
+        Mini = {
+            {X=-12, Y=28,  Z=-2,  H=210, V=250, Sim=90, Int=120, Name="KM-A"},
+            {X=-13, Y=29,  Z=-2,  H=230, V=270, Sim=90, Int=115, Name="KM-B"},
+            {X=-14, Y=30,  Z=-3,  H=250, V=290, Sim=90, Int=110, Name="KM-C"},
+            {X=-15, Y=31,  Z=-3,  H=270, V=310, Sim=90, Int=105, Name="KM-D"},
+            {X=-16, Y=32,  Z=-4,  H=290, V=330, Sim=90, Int=100, Name="KM-E"},
+            {X=-18, Y=34,  Z=-5,  H=310, V=350, Sim=90, Int=95,  Name="KM-F"},
+            {X=-20, Y=36,  Z=-6,  H=330, V=348, Sim=90, Int=90,  Name="KM-G"},
+            {X=-23, Y=39,  Z=-7,  H=320, V=340, Sim=90, Int=85,  Name="KM-H"},
+        },
+        Jumper = {
+            {X=-10, Y=30,  Z=-1,  H=200, V=260, Sim=90, Int=140, Name="KJ-A"},
+            {X=-11, Y=31,  Z=-1,  H=220, V=280, Sim=90, Int=135, Name="KJ-B"},
+            {X=-12, Y=32,  Z=-2,  H=240, V=300, Sim=90, Int=130, Name="KJ-C"},
+            {X=-13, Y=33,  Z=-2,  H=260, V=320, Sim=90, Int=125, Name="KJ-D"},
+            {X=-14, Y=34,  Z=-3,  H=280, V=340, Sim=90, Int=120, Name="KJ-E"},
+            {X=-16, Y=36,  Z=-4,  H=300, V=348, Sim=90, Int=115, Name="KJ-F"},
+            {X=-18, Y=38,  Z=-5,  H=320, V=348, Sim=90, Int=110, Name="KJ-G"},
+            {X=-21, Y=42,  Z=-6,  H=315, V=345, Sim=90, Int=105, Name="KJ-H"},
+        },
+        Zigzag = {
+            {X=-18, Y=18,  Z=-4,  H=250, V=210, Sim=90, Int=115, Name="KZ-A"},
+            {X=-19, Y=19,  Z=-4,  H=270, V=230, Sim=90, Int=110, Name="KZ-B"},
+            {X=-20, Y=20,  Z=-5,  H=290, V=250, Sim=90, Int=105, Name="KZ-C"},
+            {X=-21, Y=21,  Z=-5,  H=310, V=270, Sim=90, Int=100, Name="KZ-D"},
+            {X=-22, Y=22,  Z=-6,  H=330, V=290, Sim=90, Int=95,  Name="KZ-E"},
+            {X=-24, Y=23,  Z=-7,  H=348, V=310, Sim=90, Int=90,  Name="KZ-F"},
+            {X=-26, Y=24,  Z=-8,  H=348, V=330, Sim=90, Int=85,  Name="KZ-G"},
+            {X=-29, Y=26,  Z=-9,  H=340, V=320, Sim=90, Int=80,  Name="KZ-H"},
+        },
+        Spike = {
+            {X=-16, Y=26,  Z=-3,  H=260, V=265, Sim=90, Int=125, Name="KS-A"},
+            {X=-17, Y=27,  Z=-4,  H=280, V=285, Sim=90, Int=120, Name="KS-B"},
+            {X=-18, Y=28,  Z=-4,  H=300, V=305, Sim=90, Int=115, Name="KS-C"},
+            {X=-19, Y=29,  Z=-5,  H=320, V=325, Sim=90, Int=110, Name="KS-D"},
+            {X=-20, Y=30,  Z=-5,  H=340, V=345, Sim=90, Int=105, Name="KS-E"},
+            {X=-22, Y=32,  Z=-6,  H=348, V=348, Sim=90, Int=100, Name="KS-F"},
+            {X=-24, Y=34,  Z=-7,  H=348, V=348, Sim=90, Int=95,  Name="KS-G"},
+            {X=-28, Y=38,  Z=-9,  H=345, V=345, Sim=90, Int=90,  Name="KS-H"},
+        },
+    },
+    Gun = {
+        Universal = {
+            {X=14,  Y=22,  Z=0,   H=220, V=225, Sim=85, Int=125, Name="GU-A"},
+            {X=15,  Y=23,  Z=0,   H=240, V=245, Sim=85, Int=120, Name="GU-B"},
+            {X=16,  Y=24,  Z=0,   H=260, V=265, Sim=85, Int=115, Name="GU-C"},
+            {X=17,  Y=25,  Z=0,   H=280, V=285, Sim=85, Int=110, Name="GU-D"},
+            {X=18,  Y=26,  Z=0,   H=300, V=305, Sim=85, Int=105, Name="GU-E"},
+            {X=20,  Y=28,  Z=0,   H=320, V=325, Sim=85, Int=100, Name="GU-F"},
+            {X=22,  Y=30,  Z=0,   H=340, V=345, Sim=85, Int=95,  Name="GU-G"},
+            {X=25,  Y=33,  Z=0,   H=330, V=335, Sim=85, Int=90,  Name="GU-H"},
+        },
+        Mini = {
+            {X=12,  Y=26,  Z=0,   H=200, V=245, Sim=85, Int=115, Name="GM-A"},
+            {X=13,  Y=27,  Z=0,   H=220, V=265, Sim=85, Int=110, Name="GM-B"},
+            {X=14,  Y=28,  Z=0,   H=240, V=285, Sim=85, Int=105, Name="GM-C"},
+            {X=15,  Y=29,  Z=0,   H=260, V=305, Sim=85, Int=100, Name="GM-D"},
+            {X=16,  Y=30,  Z=0,   H=280, V=325, Sim=85, Int=95,  Name="GM-E"},
+            {X=18,  Y=32,  Z=0,   H=300, V=345, Sim=85, Int=90,  Name="GM-F"},
+            {X=20,  Y=34,  Z=0,   H=320, V=348, Sim=85, Int=85,  Name="GM-G"},
+            {X=23,  Y=37,  Z=0,   H=312, V=340, Sim=85, Int=80,  Name="GM-H"},
+        },
+        Jumper = {
+            {X=10,  Y=28,  Z=0,   H=190, V=255, Sim=90, Int=135, Name="GJ-A"},
+            {X=11,  Y=29,  Z=0,   H=210, V=275, Sim=90, Int=130, Name="GJ-B"},
+            {X=12,  Y=30,  Z=0,   H=230, V=295, Sim=90, Int=125, Name="GJ-C"},
+            {X=13,  Y=31,  Z=0,   H=250, V=315, Sim=90, Int=120, Name="GJ-D"},
+            {X=14,  Y=32,  Z=0,   H=270, V=335, Sim=90, Int=115, Name="GJ-E"},
+            {X=16,  Y=34,  Z=0,   H=290, V=348, Sim=90, Int=110, Name="GJ-F"},
+            {X=18,  Y=36,  Z=0,   H=310, V=348, Sim=90, Int=105, Name="GJ-G"},
+            {X=21,  Y=40,  Z=0,   H=305, V=345, Sim=90, Int=100, Name="GJ-H"},
+        },
+        Zigzag = {
+            {X=18,  Y=18,  Z=0,   H=240, V=205, Sim=85, Int=110, Name="GZ-A"},
+            {X=19,  Y=19,  Z=0,   H=260, V=225, Sim=85, Int=105, Name="GZ-B"},
+            {X=20,  Y=20,  Z=0,   H=280, V=245, Sim=85, Int=100, Name="GZ-C"},
+            {X=21,  Y=21,  Z=0,   H=300, V=265, Sim=85, Int=95,  Name="GZ-D"},
+            {X=22,  Y=22,  Z=0,   H=320, V=285, Sim=85, Int=90,  Name="GZ-E"},
+            {X=24,  Y=23,  Z=0,   H=340, V=305, Sim=85, Int=85,  Name="GZ-F"},
+            {X=26,  Y=24,  Z=0,   H=348, V=325, Sim=85, Int=80,  Name="GZ-G"},
+            {X=29,  Y=25,  Z=0,   H=340, V=315, Sim=85, Int=75,  Name="GZ-H"},
+        },
+        Spike = {
+            {X=16,  Y=24,  Z=0,   H=250, V=255, Sim=85, Int=120, Name="GS-A"},
+            {X=17,  Y=25,  Z=0,   H=270, V=275, Sim=85, Int=115, Name="GS-B"},
+            {X=18,  Y=26,  Z=0,   H=290, V=295, Sim=85, Int=110, Name="GS-C"},
+            {X=19,  Y=27,  Z=0,   H=310, V=315, Sim=85, Int=105, Name="GS-D"},
+            {X=20,  Y=28,  Z=0,   H=330, V=335, Sim=85, Int=100, Name="GS-E"},
+            {X=22,  Y=30,  Z=0,   H=348, V=348, Sim=85, Int=95,  Name="GS-F"},
+            {X=24,  Y=32,  Z=0,   H=348, V=348, Sim=85, Int=90,  Name="GS-G"},
+            {X=28,  Y=36,  Z=0,   H=345, V=345, Sim=85, Int=85,  Name="GS-H"},
+        },
+    },
+}
+
+local function GetBracket(ping)
+    if    ping <= 50  then return 1
+    elseif ping <= 100 then return 2
+    elseif ping <= 150 then return 3
+    elseif ping <= 200 then return 4
+    elseif ping <= 300 then return 5
+    elseif ping <= 400 then return 6
+    elseif ping <= 600 then return 7
+    else                    return 8
+    end
+end
+
+local tierOffset = {High = 0, Mid = 25, Low = 50}
+
+local function GetConfig(ping)
+    local weapon = gunMode and "Gun" or "Knife"
+
+    local target
+    if     superSpike  then target = "Spike"
+    elseif spikeMode   then target = "Spike"
+    elseif antiMini    then target = "Mini"
+    elseif antiJumper  then target = "Jumper"
+    elseif antiZigzag  then target = "Zigzag"
+    else                    target = "Universal"
+    end
+
+    local bracket = GetBracket(ping)
+    local cfg = configs[weapon][target][bracket]
+
+    local offset = tierOffset[perfTier] or 0
+    local result = {}
+    for k, v in pairs(cfg) do result[k] = v end
+    result.Int = result.Int + offset
+
+    if upgrade then
+        result.H = math.floor(result.H * 1.10)
+        result.V = math.floor(result.V * 1.10)
+    end
+
+    if superSpike then
+        result.H = math.min(math.floor(result.H * 1.20), 350)
+        result.V = math.min(math.floor(result.V * 1.20), 350)
+        result.Int = math.max(result.Int - 15, 60)
+    end
+
+    return result
+end
+
+local function Apply(cfg)
+    if locked then return end
+
+    if not internal_shared["RevertSettings_PrioritizeYourPing"] then
+        gpl_preset[1]()
+    end
+
+    local wantJump = antiJumper
+    if internal_shared["RevertSettings_PredictJump"] ~= wantJump then
+        gpl_preset[2]()
+    end
+
+    if not internal_shared["RevertSettings_PredictLag"] then
+        gpl_preset[3]()
+    end
+
+    gpl_preset[4](cfg.Sim)
+    gpl_preset[5](cfg.Int)
+    gpl_preset[7](cfg.X)
+    gpl_preset[8](cfg.Y)
+    gpl_preset[9](cfg.Z)
+    gpl_preset[10](cfg.H)
+    gpl_preset[11](cfg.V)
+end
+
+local function SetFPSBoost(state)
+    fpsBoost = state
+
+    Lighting.GlobalShadows  = not state and origShadows or false
+    Lighting.OutdoorAmbient = not state and origAmbient or Color3.fromRGB(128, 128, 128)
+
+    if Terrain then
+        Terrain.WaterWaveSize     = state and 0 or 0.15
+        Terrain.WaterWaveSpeed    = state and 0 or 10
+        Terrain.WaterReflectance  = state and 0 or 1
+        Terrain.WaterTransparency = state and 0 or 1
+    end
+end
+
+local function CreateMonitor()
+    if _G.FluxGui then _G.FluxGui:Destroy() end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name   = "AutoRevertFlux"
+    gui.Parent = game.CoreGui
+    _G.FluxGui = gui
+
+    local function MakeLabel(yPos)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size                   = UDim2.new(0, 220, 0, 25)
+        lbl.Position               = UDim2.new(0.75, 0, 0, yPos)
+        lbl.BackgroundTransparency = 1
+        lbl.Font                   = Enum.Font.Code
+        lbl.TextXAlignment         = Enum.TextXAlignment.Right
+        lbl.TextSize               = 18
+        lbl.TextColor3             = Color3.fromRGB(255, 255, 255)
+        lbl.Parent                 = gui
+        return lbl
+    end
+
+    local pingLabel    = MakeLabel(40)
+    local fpsLabel     = MakeLabel(65)
+    local modeLabel    = MakeLabel(90)
+    local profileLabel = MakeLabel(115)
+
+    updateConnection = RunService.RenderStepped:Connect(function(dt)
+        if not monitorEnabled then
+            updateConnection:Disconnect()
+            return
+        end
+
+        local ping = GetPing()
+        local fps  = math.floor(1 / dt)
+
+        local weapon = gunMode and "Gun" or "Knife"
+        local target = (superSpike and "SuperSpike")
+            or (spikeMode and "Spike")
+            or (antiMini and "Mini")
+            or (antiJumper and "Jumper")
+            or (antiZigzag and "Zigzag")
+            or "Universal"
+
+        pingLabel.Text    = "Ping: " .. ping .. "ms"
+        fpsLabel.Text     = "FPS: "  .. fps
+        modeLabel.Text    = weapon .. " / " .. target .. " / " .. perfTier
+        profileLabel.Text = "Profile: " .. currentProfile
+    end)
+end
+
+task.spawn(function()
+    while task.wait(2) do
+        if not enabled then continue end
+
+        local rawPing = GetPing()
+        RecordPing(rawPing)
+
+        local pingToUse
+        if superSpike then
+            pingToUse = GetMaxPing() + 150
+        elseif spikeMode then
+            pingToUse = GetMaxPing()
+        else
+            pingToUse = rawPing
+        end
+
+        local cfg = GetConfig(pingToUse)
+
+        if currentProfile ~= cfg.Name then
+            Apply(cfg)
+            currentProfile = cfg.Name
+        end
+    end
+end)
+
+section:AddToggle("Auto Revert", function(v)
+    enabled = v
+    if not v then currentProfile = "" end
+end)
+
+section:AddToggle("Lock Config", function(v)
+    locked = v
+end)
+
+section:AddToggle("Gun Mode", function(v)
+    gunMode = v
+    currentProfile = ""
+end)
+
+section:AddToggle("Anti Mini", function(v)
+    antiMini = v
+    if v then antiJumper = false; antiZigzag = false end
+    currentProfile = ""
+end)
+
+section:AddToggle("Anti Jumper", function(v)
+    antiJumper = v
+    if v then antiMini = false; antiZigzag = false end
+    currentProfile = ""
+end)
+
+section:AddToggle("Anti Zigzag", function(v)
+    antiZigzag = v
+    if v then antiMini = false; antiJumper = false end
+    currentProfile = ""
+end)
+
+section:AddToggle("Ping Spike Mode", function(v)
+    spikeMode = v
+    if v then superSpike = false end
+    currentProfile = ""
+end)
+
+section:AddToggle("Super Unstable Spike", function(v)
+    superSpike = v
+    if v then spikeMode = false end
+    currentProfile = ""
+end)
+
+section:AddToggle("Low Tier Device", function(v)
+    if v then perfTier = "Low" end
+    currentProfile = ""
+end)
+
+section:AddToggle("Mid Tier Device", function(v)
+    if v then perfTier = "Mid" end
+    currentProfile = ""
+end)
+
+section:AddToggle("High Tier Device", function(v)
+    if v then perfTier = "High" end
+    currentProfile = ""
+end)
+
+section:AddToggle("Upgrade Mode", function(v)
+    upgrade = v
+    internal_shared.__FLUX_UPGRADE = v
+    currentProfile = ""
+end)
+
+section:AddToggle("Monitor", function(v)
+    monitorEnabled = v
+    if v then
+        CreateMonitor()
+    else
+        if _G.FluxGui then _G.FluxGui:Destroy() end
+        if updateConnection then updateConnection:Disconnect() end
+    end
+end)
+
+section:AddToggle("FPS Boost", function(v)
+    SetFPSBoost(v)
+end)
