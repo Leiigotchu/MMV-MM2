@@ -151,7 +151,9 @@ local maids = {
     autoMurderer = nil,
 }
 
-local activeResets = {}
+local activeResets    = {}
+local antiFlingEnabled = true
+local antiFlingMaid    = nil
 
 local roleCache = {
     data      = nil,
@@ -266,66 +268,73 @@ local function restoreSelf(character, savedData, originalDestroyHeight)
     end
 end
 
-local selfFlingEnabled   = true
-local FLING_Y_THRESHOLD  = -120
-local FLING_DROP_STUDS   = 25
-local safePosition       = nil
-local safeSaveDebounce   = 0
+local antiFlingBV   = nil
+local antiFlingBG   = nil
+local antiFlingConn = nil
 
-local selfFlingConn = RunService.Heartbeat:Connect(function()
-    if not selfFlingEnabled then return end
+local function lockSelf(rootPart, lockCFrame)
+    if antiFlingBV then pcall(function() antiFlingBV:Destroy() end) end
+    if antiFlingBG then pcall(function() antiFlingBG:Destroy() end) end
 
-    local character = LocalPlayer.Character
-    if not character then return end
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not humanoid or not rootPart then return end
+    local bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bv.Velocity = Vector3.zero
+    bv.Parent   = rootPart
+    antiFlingBV = bv
 
-    local weAreResetting = next(activeResets) ~= nil
+    local bg = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    bg.P         = 9e8
+    bg.CFrame    = lockCFrame
+    bg.Parent    = rootPart
+    antiFlingBG  = bg
+end
 
-    local vel = rootPart.AssemblyLinearVelocity
-    local pos = rootPart.Position
+local function unlockSelf()
+    if antiFlingBV then pcall(function() antiFlingBV:Destroy() end) antiFlingBV = nil end
+    if antiFlingBG then pcall(function() antiFlingBG:Destroy() end) antiFlingBG = nil end
+end
 
-    if not weAreResetting then
+local function startAntiFlingLoop()
+    if antiFlingConn then antiFlingConn:Disconnect() antiFlingConn = nil end
+    if not antiFlingMaid then antiFlingMaid = Maid.new() end
 
-        local state = humanoid:GetState()
-        local safeStates = {
-            [Enum.HumanoidStateType.Running]       = true,
-            [Enum.HumanoidStateType.RunningNoPhysics] = true,
-            [Enum.HumanoidStateType.Landed]        = true,
-            [Enum.HumanoidStateType.Climbing]      = true,
-            [Enum.HumanoidStateType.Swimming]      = true,
-            [Enum.HumanoidStateType.Seated]        = true,
-        }
-        if safeStates[state] and vel.Y > FLING_Y_THRESHOLD then
-            local now = tick()
-            if now - safeSaveDebounce >= 0.1 then
-                safeSaveDebounce = now
-                safePosition = rootPart.CFrame
+    antiFlingConn = RunService.Heartbeat:Connect(function()
+        if not antiFlingEnabled then return end
+        if next(activeResets) ~= nil then return end
+
+        local character = LocalPlayer.Character
+        if not character then return end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        if not humanoid or not rootPart then return end
+
+        local vel = rootPart.AssemblyLinearVelocity
+        local isFlung = math.abs(vel.X) > 500 or math.abs(vel.Y) > 500 or math.abs(vel.Z) > 500
+
+        if isFlung then
+            rootPart.AssemblyLinearVelocity  = Vector3.zero
+            rootPart.AssemblyAngularVelocity = Vector3.zero
+            rootPart.Velocity                = Vector3.zero
+            rootPart.RotVelocity             = Vector3.zero
+            humanoid.PlatformStand           = false
+            pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+            if humanoid.Health < humanoid.MaxHealth then
+                pcall(function() humanoid.Health = humanoid.MaxHealth end)
             end
         end
+    end)
 
-        if safePosition then
-            local flingedByVel  = vel.Y < FLING_Y_THRESHOLD
-            local flingedByDrop = (safePosition.Position.Y - pos.Y) > FLING_DROP_STUDS
+    antiFlingMaid:GiveTask(function()
+        if antiFlingConn then antiFlingConn:Disconnect() antiFlingConn = nil end
+        unlockSelf()
+    end)
+end
 
-            if flingedByVel or flingedByDrop then
-
-                rootPart.CFrame                  = safePosition
-                rootPart.AssemblyLinearVelocity  = Vector3.zero
-                rootPart.AssemblyAngularVelocity = Vector3.zero
-                rootPart.Velocity                = Vector3.zero
-                rootPart.RotVelocity             = Vector3.zero
-                humanoid.PlatformStand           = false
-                humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-                if humanoid.Health < humanoid.MaxHealth then
-                    pcall(function() humanoid.Health = humanoid.MaxHealth end)
-                end
-            end
-        end
-    end
+startAntiFlingLoop()
+RootMaid:GiveTask(function()
+    if antiFlingMaid then antiFlingMaid:Destroy() antiFlingMaid = nil end
 end)
-RootMaid:GiveTask(selfFlingConn)
 
 local MAX_CONCURRENT_RESETS = 6
 
@@ -382,6 +391,8 @@ local function VoidReset(TargetPlayer, _retryCount)
     Workspace.FallenPartsDestroyHeight = -math.huge
     Humanoid.PlatformStand = true
 
+    lockSelf(RootPart, savedData.cframe)
+
     local bv = Instance.new("BodyVelocity")
     bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
     bv.Velocity = Vector3.new(0, -200000, 0)
@@ -408,6 +419,7 @@ local function VoidReset(TargetPlayer, _retryCount)
         pcall(function() bv:Destroy() end)
         pcall(function() bg:Destroy() end)
 
+        unlockSelf()
         restoreSelf(Character, savedData, originalDestroyHeight)
         if not success and _retryCount < maxRetries then
             task.delay(retryDelay, function()
@@ -501,20 +513,23 @@ end
 local resetSection = shared.AddSection("187 Reset Player v3")
 
 resetSection:AddLabel("Credits: @187")
-resetSection:AddLabel("v3.2 - Self-Fling Protection + Simpler Loop Noclip")
-
-resetSection:AddToggle("Self-Fling Protection", true, function(enabled)
-    selfFlingEnabled = enabled
-    if enabled then
-        Notify("Self-Fling", "Protection ON — will snap you back if flung", 3)
-    else
-        Notify("Self-Fling", "Protection OFF", 2)
-    end
-end)
+resetSection:AddLabel("v3.2 - Anti-Fling + Auto Lock During Reset")
 
 resetSection:AddButton("Check My Role", function()
     local role = getMyRole()
     Notify("Your Role", role or "Innocent / No Role", 4)
+end)
+
+resetSection:AddToggle("Anti-Fling", function(enabled)
+    antiFlingEnabled = enabled
+    if enabled then
+        startAntiFlingLoop()
+        Notify("Anti-Fling", "ON", 2)
+    else
+        if antiFlingMaid then antiFlingMaid:Destroy() antiFlingMaid = nil end
+        antiFlingConn = nil
+        Notify("Anti-Fling", "OFF", 2)
+    end
 end)
 
 resetSection:AddLabel("Innocent/Spectator/No Role = targets BOTH roles")
@@ -774,4 +789,4 @@ RootMaid:GiveTasks(
     function() if maids.autoMurderer then maids.autoMurderer:Destroy()  end end
 )
 
-shared.Notify("187 Reset v3.2 loaded — Self-Fling Protection active.", 3)
+shared.Notify("187 Reset v3.2 loaded.", 3)
