@@ -1,6 +1,5 @@
 local shared = odh_shared_plugins
 
-
 local Maid = {}
 Maid.__index = Maid
 
@@ -55,13 +54,13 @@ end
 
 local universalSection = shared.AddSection("Universal")
 
-local noclipEnabled     = false
-local loopNoclipMaid    = nil
-local noclipOnDuration  = 1
-local noclipOffDuration = 1
-local loopNoclipActive  = false
+local noclipEnabled      = false
+local loopNoclipMaid     = nil
+local loopNoclipInterval = 1
+local loopNoclipActive   = false
 
 local function restoreCollision()
+    if noclipEnabled then return end
     local character = LocalPlayer.Character
     if character then
         for _, part in ipairs(character:GetDescendants()) do
@@ -75,17 +74,16 @@ local function setNoclip(state)
     if not state then restoreCollision() end
 end
 
-local function startNoclipLoop()
+local function startLoopNoclip()
     if loopNoclipMaid then loopNoclipMaid:Destroy() end
     loopNoclipMaid = Maid.new()
-    Notify("Loop Noclip", "Started (ON " .. noclipOnDuration .. "s / OFF " .. noclipOffDuration .. "s)", 3)
     local thread = task.spawn(function()
         while loopNoclipActive do
             setNoclip(true)
-            task.wait(noclipOnDuration)
+            task.wait(loopNoclipInterval)
             if not loopNoclipActive then break end
             setNoclip(false)
-            task.wait(noclipOffDuration)
+            task.wait(loopNoclipInterval)
         end
         setNoclip(false)
     end)
@@ -111,13 +109,10 @@ universalSection:AddToggle("Noclip (Always On)", function(enabled)
     setNoclip(enabled)
 end)
 
-universalSection:AddLabel("Loop Noclip")
-universalSection:AddLabel("Cycles: ON for X sec then OFF for X sec, repeating")
-
-universalSection:AddToggle("Loop Noclip (Activate / Deactivate)", function(enabled)
+universalSection:AddToggle("Loop Noclip", function(enabled)
     loopNoclipActive = enabled
     if enabled then
-        startNoclipLoop()
+        startLoopNoclip()
     else
         loopNoclipActive = false
         if loopNoclipMaid then loopNoclipMaid:Destroy() loopNoclipMaid = nil end
@@ -125,21 +120,13 @@ universalSection:AddToggle("Loop Noclip (Activate / Deactivate)", function(enabl
     end
 end)
 
-universalSection:AddSlider("Activate Duration (seconds)", 1, 30, 1, function(value)
-    noclipOnDuration = value
+universalSection:AddSlider("Loop Seconds", 1, 30, 1, function(value)
+    loopNoclipInterval = value
+
     if loopNoclipActive then
-        startNoclipLoop()
+        startLoopNoclip()
     end
 end)
-
-universalSection:AddSlider("Deactivate Duration (seconds)", 1, 30, 1, function(value)
-    noclipOffDuration = value
-    if loopNoclipActive then
-        startNoclipLoop()
-    end
-end)
-
-universalSection:AddLabel("Changing sliders auto-restarts the loop")
 
 RootMaid:GiveTask(function()
     loopNoclipActive = false
@@ -204,15 +191,11 @@ local function iAmMurderer() return getMyRole() == "Murderer" end
 local function iAmSheriff()  return getMyRole() == "Sheriff"  end
 
 local function canTargetSheriff()
-    local role = getMyRole()
-    if role == "Murderer" then return false end
-    return true
+    return not iAmMurderer()
 end
 
 local function canTargetMurderer()
-    local role = getMyRole()
-    if role == "Sheriff" then return false end
-    return true
+    return not iAmSheriff()
 end
 
 local function quickScanSheriff()
@@ -275,10 +258,74 @@ local function restoreSelf(character, savedData, originalDestroyHeight)
     if humanoid.Health < humanoid.MaxHealth then
         humanoid.Health = humanoid.MaxHealth
     end
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then part.CanCollide = true end
+
+    if not noclipEnabled then
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = true end
+        end
     end
 end
+
+local selfFlingEnabled   = true
+local FLING_Y_THRESHOLD  = -120
+local FLING_DROP_STUDS   = 25
+local safePosition       = nil
+local safeSaveDebounce   = 0
+
+local selfFlingConn = RunService.Heartbeat:Connect(function()
+    if not selfFlingEnabled then return end
+
+    local character = LocalPlayer.Character
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not rootPart then return end
+
+    local weAreResetting = next(activeResets) ~= nil
+
+    local vel = rootPart.AssemblyLinearVelocity
+    local pos = rootPart.Position
+
+    if not weAreResetting then
+
+        local state = humanoid:GetState()
+        local safeStates = {
+            [Enum.HumanoidStateType.Running]       = true,
+            [Enum.HumanoidStateType.RunningNoPhysics] = true,
+            [Enum.HumanoidStateType.Landed]        = true,
+            [Enum.HumanoidStateType.Climbing]      = true,
+            [Enum.HumanoidStateType.Swimming]      = true,
+            [Enum.HumanoidStateType.Seated]        = true,
+        }
+        if safeStates[state] and vel.Y > FLING_Y_THRESHOLD then
+            local now = tick()
+            if now - safeSaveDebounce >= 0.1 then
+                safeSaveDebounce = now
+                safePosition = rootPart.CFrame
+            end
+        end
+
+        if safePosition then
+            local flingedByVel  = vel.Y < FLING_Y_THRESHOLD
+            local flingedByDrop = (safePosition.Position.Y - pos.Y) > FLING_DROP_STUDS
+
+            if flingedByVel or flingedByDrop then
+
+                rootPart.CFrame                  = safePosition
+                rootPart.AssemblyLinearVelocity  = Vector3.zero
+                rootPart.AssemblyAngularVelocity = Vector3.zero
+                rootPart.Velocity                = Vector3.zero
+                rootPart.RotVelocity             = Vector3.zero
+                humanoid.PlatformStand           = false
+                humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+                if humanoid.Health < humanoid.MaxHealth then
+                    pcall(function() humanoid.Health = humanoid.MaxHealth end)
+                end
+            end
+        end
+    end
+end)
+RootMaid:GiveTask(selfFlingConn)
 
 local MAX_CONCURRENT_RESETS = 6
 
@@ -345,9 +392,9 @@ local function VoidReset(TargetPlayer, _retryCount)
     bg.P         = 9e8
     bg.Parent    = RootPart
 
-    local startTime  = tick()
+    local startTime      = tick()
     local RESET_DURATION = 0.35
-    local resetObj   = { bv = bv, bg = bg, conn = nil }
+    local resetObj       = { bv = bv, bg = bg, conn = nil }
     activeResets[TargetPlayer.UserId] = resetObj
 
     local function cleanup(success)
@@ -360,6 +407,7 @@ local function VoidReset(TargetPlayer, _retryCount)
         end
         pcall(function() bv:Destroy() end)
         pcall(function() bg:Destroy() end)
+
         restoreSelf(Character, savedData, originalDestroyHeight)
         if not success and _retryCount < maxRetries then
             task.delay(retryDelay, function()
@@ -420,12 +468,10 @@ end
 
 local function findSheriff()
     if not canTargetSheriff() then return nil end
-
     local quickResult = quickScanSheriff()
     if quickResult and quickResult ~= LocalPlayer and not isWhitelisted(quickResult) then
         return quickResult
     end
-
     local roleData = getCachedRoleData()
     if roleData then
         for playerName, data in pairs(roleData) do
@@ -440,7 +486,6 @@ end
 
 local function findMurderer()
     if not canTargetMurderer() then return nil end
-
     local roleData = getCachedRoleData()
     if roleData then
         for playerName, data in pairs(roleData) do
@@ -456,7 +501,16 @@ end
 local resetSection = shared.AddSection("187 Reset Player v3")
 
 resetSection:AddLabel("Credits: @187")
-resetSection:AddLabel("v3 - Role-Aware + Auto Retry + Less Lag")
+resetSection:AddLabel("v3.2 - Self-Fling Protection + Simpler Loop Noclip")
+
+resetSection:AddToggle("Self-Fling Protection", true, function(enabled)
+    selfFlingEnabled = enabled
+    if enabled then
+        Notify("Self-Fling", "Protection ON — will snap you back if flung", 3)
+    else
+        Notify("Self-Fling", "Protection OFF", 2)
+    end
+end)
 
 resetSection:AddButton("Check My Role", function()
     local role = getMyRole()
@@ -720,4 +774,4 @@ RootMaid:GiveTasks(
     function() if maids.autoMurderer then maids.autoMurderer:Destroy()  end end
 )
 
-shared.Notify("187 Reset v3 + Universal loaded.", 3)
+shared.Notify("187 Reset v3.2 loaded — Self-Fling Protection active.", 3)
